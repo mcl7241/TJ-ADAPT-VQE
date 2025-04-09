@@ -2,6 +2,7 @@ from .observable import (
     HamiltonianObservable,
     NumberObservable,
     Observable,
+    SparsePauliObservable,
     SpinSquaredObservable,
     SpinZObservable,
 )
@@ -12,4 +13,5 @@ __all__ = [
     "SpinZObservable",
     "SpinSquaredObservable",
     "HamiltonianObservable",
+    "SparsePauliObservable",
 ]

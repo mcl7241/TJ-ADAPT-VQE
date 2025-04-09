@@ -3,13 +3,11 @@ from openfermion import MolecularData
 from qiskit.circuit import QuantumCircuit  # type: ignore
 from typing_extensions import Self
 
-from ..observables.observable import HamiltonianObservable
+from ..observables.observable import HamiltonianObservable, Observable
 from ..optimizers.optimizer import Optimizer
-from ..utils.ansatz import make_tups_ansatz
-from ..utils.measure import (
-    Measure,
-    exact_expectation_value,
-)
+from ..utils.ansatz import make_perfect_pair_ansatz, make_tups_ansatz
+from ..utils.logger import Logger
+from ..utils.measure import Measure
 
 
 class VQE:
@@ -19,12 +17,17 @@ class VQE:
     Args:
         molecule: Moleculardata, molecule to find ground state of
         optimizer: Optimizer, optimizer that the Measure class is passed into
+        observables: list[Oobservable], what observables should be calculated each iteration
         num_shots: int, num shots to run each simulation with
 
     """
 
     def __init__(
-        self: Self, molecule: MolecularData, optimizer: Optimizer, num_shots: int = 1024
+        self: Self,
+        molecule: MolecularData,
+        optimizer: Optimizer,
+        observables: list[Observable],
+        num_shots: int = 1024,
     ) -> None:
 
         self.molecule = molecule
@@ -33,27 +36,30 @@ class VQE:
 
         self.optimizer = optimizer
 
+        self.observables = observables
+
         self.num_shots = num_shots
 
-        self.circuit = self._make_initial_circuit()
+        self.circuit = self._make_ansatz()
 
-        self.param_vals = (
-            np.random.rand(len(self.circuit.parameters)).astype(np.float32) - 0.5
+        self.param_vals = 2 * np.random.rand(len(self.circuit.parameters)) - 1
+
+        self.logger = Logger()
+
+        self.logger.add_config_option("optimizer", self.optimizer.to_config())
+        self.logger.add_config_option("molecule", self.molecule.name)
+
+    def _make_ansatz(self: Self) -> QuantumCircuit:
+        ansatz = make_perfect_pair_ansatz(self.n_qubits).compose(
+            make_tups_ansatz(self.n_qubits, 1)
         )
 
-    def _make_initial_circuit(self: Self) -> QuantumCircuit:
-        """
-        Constructs the parameterized Ansatz circuit to be optimized
-        """
-
-        return make_tups_ansatz(self.n_qubits, 1).decompose(reps=2)
+        return ansatz.decompose(reps=2)
 
     def optimize_parameters(self: Self) -> None:
         """
         Performs a single iteration step of the vqe, stopping when the provided Optimizer's stopping condition has been reached
         """
-
-        # TODO: add logging
 
         iteration = 1
 
@@ -61,16 +67,19 @@ class VQE:
             measure = Measure(
                 self.circuit,
                 self.param_vals,
-                [self.hamiltonian],
+                [self.hamiltonian, *self.observables],
                 [self.hamiltonian],
                 num_shots=self.num_shots,
             )
 
-            print(
-                f"Iteration: {iteration} |",
-                f"energy={measure.evs[self.hamiltonian]:.5f},",
-                f"param_vals={self.param_vals},",
-                f"grad={measure.grads[self.hamiltonian]}",
+            self.logger.add_logged_value("energy", measure.evs[self.hamiltonian])
+
+            for obv in self.observables:
+                self.logger.add_logged_value(obv.name, measure.evs[obv])
+
+            self.logger.add_logged_value("params", self.param_vals.tolist())
+            self.logger.add_logged_value(
+                "grads", measure.grads[self.hamiltonian].tolist()
             )
 
             iteration += 1
@@ -81,18 +90,3 @@ class VQE:
 
             if self.optimizer.is_converged(measure.grads[self.hamiltonian]):
                 break
-
-        full_circuit = self.circuit.assign_parameters(
-            {p: val for p, val in zip(self.circuit.parameters, self.param_vals)}
-        )
-
-        state_ev = exact_expectation_value(
-            full_circuit, self.hamiltonian.operator_sparse
-        )
-
-        print(
-            f"HF energy: {self.molecule.hf_energy},",
-            f"Exact energy: {self.molecule.fci_energy},",
-            f"Calculated energy: {state_ev},",
-            f"Accuracy: {state_ev / self.molecule.fci_energy:.5%}",
-        )
